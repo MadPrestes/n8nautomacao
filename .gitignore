@@ -1,0 +1,13 @@
+# Ambientes e credenciais
+.env
+ssl/
+
+# Dados persistentes do Docker
+volumes/
+postgres_data/
+n8n_data/
+nginx_logs/
+
+# Logs e arquivos de sistema
+*.log
+.DS_Store
