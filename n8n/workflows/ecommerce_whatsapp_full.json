@@ -1,0 +1,663 @@
+{
+  "name": "E-commerce WhatsApp Completo",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ecommerce-whatsapp",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-evolution",
+      "name": "Webhook Evolution",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        180,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "language": "JavaScript",
+        "jsCode": "const body = $json.body || $json || {};
+const payload = body.data || body;
+const text = (payload.text || payload.message || payload.msg || '').toString().trim();
+const phone = (payload.from || payload.sender || payload.number || '').toString().trim();
+const instance = (payload.instanceName || payload.instance || 'default').toString();
+const type = (payload.type || 'text').toString();
+
+const cleanText = text.toLowerCase();
+
+return {
+  phone,
+  text,
+  cleanText,
+  instance,
+  type,
+  receivedAt: new Date().toISOString(),
+  raw: body
+};"
+      },
+      "id": "parse-message",
+      "name": "Parse WhatsApp",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        420,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.phone }}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "id": "if-phone",
+      "name": "Número válido?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        660,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, telefone, nome FROM clientes WHERE telefone = $1;",
+        "additionalFields": {
+          "queryParameters": [
+            "={{ $json.phone }}"
+          ]
+        }
+      },
+      "id": "db-check-client",
+      "name": "Buscar cliente no PostgreSQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        900,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO clientes (telefone, nome) VALUES ($1, 'Cliente WhatsApp') ON CONFLICT (telefone) DO NOTHING;",
+        "additionalFields": {
+          "queryParameters": [
+            "={{ $json.phone }}"
+          ]
+        }
+      },
+      "id": "db-create-client",
+      "name": "Criar cliente se não existir",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        900,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT telefone, etapa, dados_temporarios FROM sessoes WHERE telefone = $1;",
+        "additionalFields": {
+          "queryParameters": [
+            "={{ $json.phone }}"
+          ]
+        }
+      },
+      "id": "db-load-session",
+      "name": "Carregar sessão do cliente",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        1160,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "language": "JavaScript",
+        "jsCode": "const phone = $json.phone || '';
+const text = ($json.text || '').trim();
+const normalized = text.toLowerCase();
+const session = ($json.rows && $json.rows[0]) || null;
+const etapa = session && session.etapa ? session.etapa : 'INICIO';
+const dados = session && session.dados_temporarios ? session.dados_temporarios : {};
+
+let responseType = 'MENU';
+let nextStage = etapa;
+let payload = { phone, text, etapa, dados, instance: $json.instance || 'default' };
+
+if (['oi','olá','hello','hi','menu','inicio','iniciar'].includes(normalized)) {
+  responseType = 'MENU';
+  nextStage = 'INICIO';
+} else if (['1','catalogo','catálogo','produtos','ver produtos'].includes(normalized)) {
+  responseType = 'CATALOGO';
+  nextStage = 'CATALOGO';
+} else if (['2','carrinho','ver carrinho','checkout'].includes(normalized)) {
+  responseType = 'CARRINHO';
+  nextStage = 'CARRINHO';
+} else if (['3','finalizar','fechar pedido','confirmar'].includes(normalized)) {
+  responseType = 'CONFIRMAR';
+  nextStage = 'CONFIRMAR';
+} else if (['4','pix','pagar','pagamento'].includes(normalized)) {
+  responseType = 'PAGAMENTO';
+  nextStage = 'PAGAMENTO';
+} else if (['sim','confirmo'].includes(normalized)) {
+  responseType = 'PEDIDO';
+  nextStage = 'PEDIDO';
+} else if (/^\d+$/i.test(text) && Number(text) > 0 && Number(text) <= 999) {
+  responseType = 'SELECIONAR_PRODUTO';
+  nextStage = 'CARRINHO';
+} else {
+  responseType = 'MENU';
+  nextStage = 'INICIO';
+}
+
+return {
+  ...payload,
+  responseType,
+  nextStage,
+  cart: dados.carrinho || [],
+  total: dados.valor_total || 0
+};"
+      },
+      "id": "route-message",
+      "name": "Decidir rota da conversa",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1420,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, nome, descricao, preco FROM produtos WHERE ativo = TRUE ORDER BY id;",
+        "additionalFields": {
+          "queryParameters": []
+        }
+      },
+      "id": "db-list-products",
+      "name": "Buscar catálogo de produtos",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "language": "JavaScript",
+        "jsCode": "const rows = $json.rows || [];
+
+if (!rows.length) {
+  return {
+    message: 'No momento não há produtos disponíveis. Tente novamente em breve.',
+    instance: $json.instance || 'default',
+    phone: $json.phone || ''
+  };
+}
+
+const catalog = rows.map((p, idx) => `${idx + 1}. ${p.nome} - R$ ${Number(p.preco).toFixed(2)}\n${p.descricao || ''}`).join('\n\n');
+
+return {
+  message: '🛍️ Catálogo da loja\n\n' + catalog + '\n\nDigite o número do produto para adicionar ao carrinho ou envie 0 para voltar ao menu.',
+  instance: $json.instance || 'default',
+  phone: $json.phone || ''
+};"
+      },
+      "id": "format-catalog",
+      "name": "Formatar catálogo para WhatsApp",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1940,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.EVOLUTION_API_URL }}/message/sendText/{{ $json.instance }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"number\":\"{{ $json.phone }}\",\"text\":\"{{ $json.message }}\"}",
+        "options": {
+          "headers": {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer {{ $env.EVOLUTION_API_KEY }}"
+          }
+        },
+        "timeout": 120000
+      },
+      "id": "reply-message",
+      "name": "Enviar resposta para cliente",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        2190,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "language": "JavaScript",
+        "jsCode": "const selected = Number(($json.text || '').trim());
+const products = $json.rows || [];
+const product = products[selected - 1];
+
+if (!product) {
+  return {
+    message: 'Produto inválido. Digite o número do item do catálogo.',
+    phone: $json.phone,
+    instance: $json.instance,
+    retry: true
+  };
+}
+
+const cart = $json.cart || [];
+const existing = cart.find(item => item.produto_id === product.id);
+
+if (existing) {
+  existing.quantidade += 1;
+} else {
+  cart.push({
+    produto_id: product.id,
+    nome: product.nome,
+    quantidade: 1,
+    preco_unitario: Number(product.preco)
+  });
+}
+
+const total = cart.reduce((sum, item) => sum + (Number(item.preco_unitario) * item.quantidade), 0);
+
+return {
+  phone: $json.phone,
+  instance: $json.instance,
+  cart,
+  valor_total: Number(total.toFixed(2)),
+  message: `✅ Produto adicionado ao carrinho:\n${product.nome}\n\nCarrinho atual:\n${cart.map(item => `- ${item.nome} x${item.quantidade} = R$ ${(Number(item.preco_unitario) * item.quantidade).toFixed(2)}`).join('\n')}\n\nTotal: R$ ${Number(total.toFixed(2))}\n\nDigite 3 para fechar o pedido ou 1 para continuar comprando.`,
+  nextStep: 'CONFIRMAR'
+};"
+      },
+      "id": "add-to-cart",
+      "name": "Adicionar item ao carrinho",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO sessoes (telefone, etapa, dados_temporarios) VALUES ($1, $2, $3::jsonb) ON CONFLICT (telefone) DO UPDATE SET etapa = EXCLUDED.etapa, dados_temporarios = EXCLUDED.dados_temporarios, atualizado_em = CURRENT_TIMESTAMP;",
+        "additionalFields": {
+          "queryParameters": [
+            "={{ $json.phone }}",
+            "={{ $json.nextStep || 'CARRINHO' }}",
+            "={{ JSON.stringify({ carrinho: $json.cart || [], valor_total: $json.valor_total || 0 }) }}"
+          ]
+        }
+      },
+      "id": "db-save-session",
+      "name": "Salvar estado da sessão",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        1940,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "language": "JavaScript",
+        "jsCode": "const cart = $json.cart || [];
+const total = Number($json.valor_total || 0);
+
+const orderResume = cart.map(item => `${item.nome} x${item.quantidade} - R$ ${(Number(item.preco_unitario) * item.quantidade).toFixed(2)}`).join('\n');
+
+return {
+  phone: $json.phone,
+  instance: $json.instance,
+  message: `✅ Pedido confirmado!\n\n${orderResume}\n\nTotal: R$ ${total.toFixed(2)}\n\nVou gerar o Pix para você.`,
+  cart,
+  total
+};"
+      },
+      "id": "confirm-order",
+      "name": "Confirmar pedido",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO pedidos (cliente_id, valor_total, status) VALUES ((SELECT id FROM clientes WHERE telefone = $1), $2, 'PENDENTE') RETURNING id;",
+        "additionalFields": {
+          "queryParameters": [
+            "={{ $json.phone }}",
+            "={{ $json.total || 0 }}"
+          ]
+        }
+      },
+      "id": "db-create-order",
+      "name": "Criar pedido no banco",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        1940,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "language": "JavaScript",
+        "jsCode": "const pedidoId = ($json.rows && $json.rows[0] && $json.rows[0].id) || null;
+const cart = $json.cart || [];
+const total = Number($json.total || 0);
+
+const pix = '00020126' + '...' + '52040000';
+
+return {
+  phone: $json.phone,
+  instance: $json.instance,
+  pedidoId,
+  cart,
+  total,
+  pixCopiaCola: pix,
+  message: `💳 Pagamento via Pix\n\nPedido #${pedidoId || 'novo'}\nTotal: R$ ${total.toFixed(2)}\n\nCódigo Pix:\n${pix}\n\nApós pagar, me avise 'PAGO' para confirmar.`,
+  nextStep: 'PAGAMENTO'
+};"
+      },
+      "id": "generate-pix",
+      "name": "Gerar Pix do pedido",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2190,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE pedidos SET pix_copia_cola = $2, status = 'PAGO' WHERE id = $1;",
+        "additionalFields": {
+          "queryParameters": [
+            "={{ $json.pedidoId }}",
+            "={{ $json.pixCopiaCola }}"
+          ]
+        }
+      },
+      "id": "db-save-pix",
+      "name": "Salvar Pix no pedido",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        2440,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.EVOLUTION_API_URL }}/message/sendText/{{ $json.instance }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"number\":\"{{ $json.phone }}\",\"text\":\"{{ $json.message }}\"}",
+        "options": {
+          "headers": {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer {{ $env.EVOLUTION_API_KEY }}"
+          }
+        },
+        "timeout": 120000
+      },
+      "id": "reply-pix",
+      "name": "Enviar Pix ao cliente",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        2700,
+        700
+      ]
+    }
+  ],
+  "connections": {
+    "webhook-evolution": {
+      "main": [
+        [
+          {
+            "node": "parse-message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "parse-message": {
+      "main": [
+        [
+          {
+            "node": "if-phone",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "if-phone": {
+      "main": [
+        [
+          {
+            "node": "db-check-client",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "reply-message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "db-check-client": {
+      "main": [
+        [
+          {
+            "node": "db-create-client",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "db-create-client": {
+      "main": [
+        [
+          {
+            "node": "db-load-session",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "db-load-session": {
+      "main": [
+        [
+          {
+            "node": "route-message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "route-message": {
+      "main": [
+        [
+          {
+            "node": "db-list-products",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "add-to-cart",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "confirm-order",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "generate-pix",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "reply-message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "db-list-products": {
+      "main": [
+        [
+          {
+            "node": "format-catalog",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "format-catalog": {
+      "main": [
+        [
+          {
+            "node": "reply-message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "add-to-cart": {
+      "main": [
+        [
+          {
+            "node": "db-save-session",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "db-save-session": {
+      "main": [
+        [
+          {
+            "node": "reply-message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "confirm-order": {
+      "main": [
+        [
+          {
+            "node": "db-create-order",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "db-create-order": {
+      "main": [
+        [
+          {
+            "node": "generate-pix",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "generate-pix": {
+      "main": [
+        [
+          {
+            "node": "db-save-pix",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "db-save-pix": {
+      "main": [
+        [
+          {
+            "node": "reply-pix",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    "ecommerce",
+    "whatsapp",
+    "postgres",
+    "pix",
+    "evolution"
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2026-10-26T00:00:00.000Z",
+  "versionId": "1"
+}
