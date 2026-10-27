@@ -1,0 +1,109 @@
+{
+  "name": "Evolution WhatsApp - Recebimento e Resposta",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "evolution-webhook",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-01",
+      "name": "Webhook Evolution",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $json.body || $json || {};
+const payload = body.data || body;
+const text = payload.text || payload.message || '';
+const phone = payload.from || payload.sender || '';
+const instance = payload.instanceName || payload.instance || 'default';
+const type = payload.type || 'text';
+
+return {
+  phone,
+  text,
+  instance,
+  type,
+  raw: body,
+  receivedAt: new Date().toISOString()
+};"
+      },
+      "id": "code-01",
+      "name": "Extrair dados do WhatsApp",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.EVOLUTION_API_URL }}/message/sendText/{{ $json.instance }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"number\":\"{{ $json.phone }}\",\"text\":\"Olá! Recebi sua mensagem: {{ $json.text }}\\n\\nEm breve vou processar sua solicitação.\"}",
+        "options": {
+          "headers": {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer {{ $env.EVOLUTION_API_KEY }}"
+          }
+        },
+        "timeout": 120000
+      },
+      "id": "http-01",
+      "name": "Responder via Evolution API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        760,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "webhook-01": {
+      "main": [
+        [
+          {
+            "node": "code-01",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "code-01": {
+      "main": [
+        [
+          {
+            "node": "http-01",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    "whatsapp",
+    "evolution",
+    "webhook"
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2026-10-26T00:00:00.000Z",
+  "versionId": "1"
+}
